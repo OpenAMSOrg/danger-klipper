@@ -532,7 +532,15 @@ check_send_command(struct serialqueue *sq, int pending, double eventtime)
     struct command_queue *cq;
     list_for_each_entry(cq, &sq->pending_queues, node) {
         // Move messages from the upcoming_queue to the ready_queue
-        while (!list_empty(&cq->upcoming_queue)) {
+
+        // Fixed 3/26/2024 (JR Lomas <lomas.jr@gmail.com>): The original code contained a while loop
+        // which if there are multiple messages in the upcoming_queue all the bytes
+        // will be transmitted in the same packet, instead of properly terminating
+        // each of the messages with a SYNC byte.
+        // check send command will be called again to send the next message in the upcoming_queue
+        // by command_event, the while loop is exercised there.
+        
+        if (!list_empty(&cq->upcoming_queue)) {
             struct queue_message *qm = list_first_entry(
                 &cq->upcoming_queue, struct queue_message, node);
             if (ack_clock < qm->min_clock) {
