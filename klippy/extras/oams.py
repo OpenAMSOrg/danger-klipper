@@ -61,6 +61,9 @@ class OAMS:
         gcode.register_command("OAMS_UNLOAD_SPOOL",
             self.cmd_OAMS_UNLOAD_SPOOL,
             self.cmd_OAMS_UNLOAD_SPOOL_help)
+        gcode.register_command("OAMS_FOLLOWER",
+            self.cmd_OAMS_FOLLOWER,
+            self.cmd_OAMS_ENABLE_FOLLOWER_help)
     
     cmd_OAMS_LOAD_SPOOL_help = "Load a new spool of filament"
     def cmd_OAMS_LOAD_SPOOL(self, gcmd):
@@ -96,6 +99,21 @@ class OAMS:
         else:    
             gcmd.respond_error("Unknown error from OAMS")
             
+    cmd_OAMS_ENABLE_FOLLOWER_help = "Enable the follower"
+    def cmd_OAMS_FOLLOWER(self, gcmd):
+        enable = gcmd.get_int("ENABLE", None)
+        if enable is None:
+            raise gcmd.error("ENABLE is required")
+        direction = gcmd.get_int("DIRECTION", None)
+        if direction is None:
+            raise gcmd.error("DIRECTION is required")
+        self.oams_follower_cmd.send([enable, direction])
+        if enable == 1 and direction == 0:
+            gcmd.respond_info("Follower enable in forward direction")
+        elif enable == 1 and direction == 1:
+            gcmd.respond_info("Follower enable in reverse direction")
+        elif enable == 0:
+            gcmd.respond_info("Follower disabled")
 
 
     def _oams_action_status(self,params):
@@ -156,6 +174,10 @@ class OAMS:
         
         self.oams_unload_spool_cmd = self.mcu.lookup_command(
             "oams_cmd_unload_spool"
+        )
+        
+        self.oams_follower_cmd = self.mcu.lookup_command(
+            "oams_cmd_follower enable=%c direction=%c"
         )
 
     def get_status(self, eventtime):
