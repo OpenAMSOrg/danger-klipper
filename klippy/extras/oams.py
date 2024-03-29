@@ -7,6 +7,17 @@ import logging
 import mcu
 import struct
 
+OAMS_STATUS_LOADING = 0
+OAMS_STATUS_UNLOADING = 1
+OAMS_STATUS_FORWARD_FOLLOWING = 2
+OAMS_STATUS_REVERSE_FOLLOWING = 3
+OAMS_STATUS_COASTING = 4
+OAMS_STATUS_STOPPED = 5
+
+OAMS_OP_CODE_SUCCESS = 0
+OAMS_OP_CODE_ERROR_UNSPECIFIED = 1
+OAMS_OP_CODE_ERROR_BUSY = 2
+
 class OAMS:
     def __init__(self, config):
         self.printer = config.get_printer()
@@ -20,17 +31,83 @@ class OAMS:
         self.hub_hes_on = list(map(lambda x: float(x.strip()), config.get("hub_hes_on").split(",")))
         self.hub_hes_is_above = config.getboolean("hub_hes_is_above")
         self.filament_path_length = config.getfloat("ptfe_length")
-        self.oid = self.mcu.create_oid()
+        # 
+        # self.mcu.register_response(
+        #     self._oams_status, "oams_status", self.oid
+        # )
+        # self.oid = self.mcu.create_oid()
+        
         self.mcu.register_response(
-            self._oams_status, "oams_status", self.oid
+            self._oams_action_status, "oams_action_status"
         )
         self.mcu.register_config_callback(self._build_config)
-        self.printer.add_object('oams', self)
+        self.name = config.get_name()
+        #logging.info("mcu commands: %s", self.mcu.get_commands())
+        self.register_commands(self.name)
+        self.printer.add_object("oams", self)
+        self.reactor = self.printer.get_reactor()
+        self.action_status = None
+        self.action_status_code = None
         
         super().__init__()
+        
+    def register_commands(self, name):
+        # Register commands
+        gcode = self.printer.lookup_object("gcode")
+        gcode.register_command ("OAMS_LOAD_SPOOL",
+            self.cmd_OAMS_LOAD_SPOOL,
+            desc=self.cmd_OAMS_LOAD_SPOOL_help,
+        )
+        gcode.register_command("OAMS_UNLOAD_SPOOL",
+            self.cmd_OAMS_UNLOAD_SPOOL,
+            self.cmd_OAMS_UNLOAD_SPOOL_help)
+    
+    cmd_OAMS_LOAD_SPOOL_help = "Load a new spool of filament"
+    def cmd_OAMS_LOAD_SPOOL(self, gcmd):
+        self.action_status = OAMS_STATUS_LOADING
+        spool_idx = gcmd.get_int("SPOOL", None)
+        if spool_idx is None:
+            raise gcmd.error("SPOOL index is required")
+        if spool_idx < 0 or spool_idx > 3:
+             raise gcmd.error("Invalid SPOOL index")
+        self.oams_load_spool_cmd.send([spool_idx])
+        # we now want to wait until we get a response from the MCU
+        while(self.action_status is not None):
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+        
+        if self.action_status_code == OAMS_OP_CODE_SUCCESS:
+            gcmd.respond_info("Spool unloaded successfully")
+        elif self.action_status_code == OAMS_OP_CODE_ERROR_BUSY:
+            gcmd.respond_error("OAMS is busy")
+        else:    
+            gcmd.respond_error("Unknown error from OAMS")
 
-    def _oams_status(self,params):
+        
+    cmd_OAMS_UNLOAD_SPOOL_help = "Unload a spool of filament"
+    def cmd_OAMS_UNLOAD_SPOOL(self, gcmd):
+        self.action_status = OAMS_STATUS_UNLOADING
+        self.oams_unload_spool_cmd.send()
+        while(self.action_status is not None):
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+        if self.action_status_code == OAMS_OP_CODE_SUCCESS:
+            gcmd.respond_info("Spool unloaded successfully")
+        elif self.action_status_code == OAMS_OP_CODE_ERROR_BUSY:
+            gcmd.respond_error("OAMS is busy")
+        else:    
+            gcmd.respond_error("Unknown error from OAMS")
+            
+
+
+    def _oams_action_status(self,params):
         logging.info("oams status received")
+        if params['action'] == OAMS_STATUS_LOADING:
+            self.action_status = None
+            self.action_status_code = params['code']
+        elif params['action'] == OAMS_STATUS_UNLOADING:
+            self.action_status = None
+            self.action_status_code = params['code']
+        else:
+            logging.error("Spurious response from AMS with code %d and action %d", params['code'], params['action'])
 
     def float_to_u32(self, f):
         return struct.unpack('I', struct.pack('f', f))[0]
@@ -71,6 +148,14 @@ class OAMS:
         self.mcu.add_config_cmd(
             "config_oams_ptfe length=%u"
             % (self.filament_path_length)
+        )
+        
+        self.oams_load_spool_cmd = self.mcu.lookup_command(
+            "oams_cmd_load_spool spool=%c"
+        )
+        
+        self.oams_unload_spool_cmd = self.mcu.lookup_command(
+            "oams_cmd_unload_spool"
         )
 
     def get_status(self, eventtime):
