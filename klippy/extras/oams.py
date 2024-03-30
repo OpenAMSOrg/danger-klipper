@@ -88,10 +88,13 @@ class OAMS:
         while(self.action_status is not None):
             self.reactor.pause(self.reactor.monotonic() + 0.1)
         if self.action_status_code == OAMS_OP_CODE_SUCCESS:
-            gcmd.respond_info("Calibrated HES %d to %d threshold" % (spool_idx, self.action_status_value))
-            # configfile = self.printer.lookup_object('configfile')
-            # configfile.set(self.name, 'ptfe_length', "%d" % (self.action_status_value,))
-            # gcmd.respond_info("Done calibrating clicks, output saved to configuration")
+            value = self.u32_to_float(self.action_status_value)
+            gcmd.respond_info("Calibrated HES %d to %f threshold" % (spool_idx, value))
+            configfile = self.printer.lookup_object('configfile')
+            self.hub_hes_on[spool_idx] = value
+            values = ",".join(map(str, self.hub_hes_on))
+            configfile.set(self.name, 'hub_hes_on', "%s" % (values,))
+            gcmd.respond_info("Done calibrating HES, output saved to configuration")
         else:
             gcmd.respond_error("Calibration of HES %d failed" % spool_idx)
         
@@ -180,6 +183,9 @@ class OAMS:
 
     def float_to_u32(self, f):
         return struct.unpack('I', struct.pack('f', f))[0]
+    
+    def u32_to_float(self, i):
+        return struct.unpack('f', struct.pack('I', i))[0]
 
 
     def _build_config(self):
