@@ -13,6 +13,7 @@ OAMS_STATUS_FORWARD_FOLLOWING = 2
 OAMS_STATUS_REVERSE_FOLLOWING = 3
 OAMS_STATUS_COASTING = 4
 OAMS_STATUS_STOPPED = 5
+OAMS_STATUS_CALIBRATING = 6
 
 OAMS_OP_CODE_SUCCESS = 0
 OAMS_OP_CODE_ERROR_UNSPECIFIED = 1
@@ -31,6 +32,7 @@ class OAMS:
         self.hub_hes_on = list(map(lambda x: float(x.strip()), config.get("hub_hes_on").split(",")))
         self.hub_hes_is_above = config.getboolean("hub_hes_is_above")
         self.filament_path_length = config.getfloat("ptfe_length")
+        self.name = config.get_name()
         # 
         # self.mcu.register_response(
         #     self._oams_status, "oams_status", self.oid
@@ -61,9 +63,54 @@ class OAMS:
         gcode.register_command("OAMS_UNLOAD_SPOOL",
             self.cmd_OAMS_UNLOAD_SPOOL,
             self.cmd_OAMS_UNLOAD_SPOOL_help)
+        
         gcode.register_command("OAMS_FOLLOWER",
             self.cmd_OAMS_FOLLOWER,
             self.cmd_OAMS_ENABLE_FOLLOWER_help)
+        
+        gcode.register_command("OAMS_CALIBRATE_PTFE_LENGTH",
+            self.cmd_OAMS_CALIBRATE_PTFE_LENGTH,
+            self.cmd_OAMS_CALIBRATE_PTFE_LENGTH_help)
+        
+        gcode.register_command("OAMS_CALIBRATE_HUB_HES",
+            self.cmd_OAMS_CALIBRATE_HUB_HES,
+            self.cmd_OAMS_CALIBRATE_HUB_HES_help)
+        
+    cmd_OAMS_CALIBRATE_HUB_HES_help = "Calibrate the range of a single hub HES"
+    def cmd_OAMS_CALIBRATE_HUB_HES(self, gcmd):
+        self.action_status = OAMS_STATUS_CALIBRATING
+        spool_idx = gcmd.get_int("SPOOL", None)
+        if spool_idx is None:
+            raise gcmd.error("SPOOL index is required")
+        if spool_idx < 0 or spool_idx > 3:
+            raise gcmd.error("Invalid SPOOL index")
+        self.oams_calibrate_hub_hes_cmd.send([spool_idx])
+        while(self.action_status is not None):
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+        if self.action_status_code == OAMS_OP_CODE_SUCCESS:
+            gcmd.respond_info("Calibrated HES %d to %d threshold" % (spool_idx, self.action_status_value))
+            # configfile = self.printer.lookup_object('configfile')
+            # configfile.set(self.name, 'ptfe_length', "%d" % (self.action_status_value,))
+            # gcmd.respond_info("Done calibrating clicks, output saved to configuration")
+        else:
+            gcmd.respond_error("Calibration of HES %d failed" % spool_idx)
+        
+    cmd_OAMS_CALIBRATE_PTFE_LENGTH_help = "Calibrate the length of the PTFE tube"
+    def cmd_OAMS_CALIBRATE_PTFE_LENGTH(self, gcmd):
+        self.action_status = OAMS_STATUS_CALIBRATING
+        spool = gcmd.get_int("SPOOL", None)
+        if spool is None:
+            raise gcmd.error("SPOOL index is required")
+        self.oams_calibrate_ptfe_length_cmd.send([spool])
+        while(self.action_status is not None):
+            self.reactor.pause(self.reactor.monotonic() + 0.1)
+        if self.action_status_code == OAMS_OP_CODE_SUCCESS:
+            gcmd.respond_info("Calibrated PTFE length to %d" % self.action_status_value)
+            configfile = self.printer.lookup_object('configfile')
+            configfile.set(self.name, 'ptfe_length', "%d" % (self.action_status_value,))
+            gcmd.respond_info("Done calibrating clicks, output saved to configuration")
+        else:
+            gcmd.respond_error("Calibration of PTFE length failed")
     
     cmd_OAMS_LOAD_SPOOL_help = "Load a new spool of filament"
     def cmd_OAMS_LOAD_SPOOL(self, gcmd):
@@ -124,6 +171,10 @@ class OAMS:
         elif params['action'] == OAMS_STATUS_UNLOADING:
             self.action_status = None
             self.action_status_code = params['code']
+        elif params['action'] == OAMS_STATUS_CALIBRATING:
+            self.action_status = None
+            self.action_status_code = params['code']
+            self.action_status_value = params['value']
         else:
             logging.error("Spurious response from AMS with code %d and action %d", params['code'], params['action'])
 
@@ -178,6 +229,14 @@ class OAMS:
         
         self.oams_follower_cmd = self.mcu.lookup_command(
             "oams_cmd_follower enable=%c direction=%c"
+        )
+        
+        self.oams_calibrate_ptfe_length_cmd = self.mcu.lookup_command(
+            "oams_cmd_calibrate_ptfe_length spool=%c"
+        )
+        
+        self.oams_calibrate_hub_hes_cmd = self.mcu.lookup_command(
+            "oams_cmd_calibrate_hub_hes spool=%c"
         )
 
     def get_status(self, eventtime):
