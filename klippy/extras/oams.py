@@ -33,25 +33,65 @@ class OAMS:
         self.hub_hes_is_above = config.getboolean("hub_hes_is_above")
         self.filament_path_length = config.getfloat("ptfe_length")
         self.name = config.get_name()
-        # 
-        # self.mcu.register_response(
-        #     self._oams_status, "oams_status", self.oid
-        # )
-        # self.oid = self.mcu.create_oid()
-        
+        self.current_spool = None
         self.mcu.register_response(
             self._oams_action_status, "oams_action_status"
         )
         self.mcu.register_config_callback(self._build_config)
         self.name = config.get_name()
-        #logging.info("mcu commands: %s", self.mcu.get_commands())
         self.register_commands(self.name)
         self.printer.add_object("oams", self)
         self.reactor = self.printer.get_reactor()
         self.action_status = None
         self.action_status_code = None
-        
+        self.printer.register_event_handler("klippy:ready", self.handle_ready)
         super().__init__()
+
+    def get_status(self, eventtime):
+        return {'current_spool': self.current_spool}
+    
+    def stats(self, eventtime):
+        return (False, """
+OAMS: current_spool=%s
+""" 
+                % (self.current_spool)) 
+
+    def handle_ready(self):
+        try:
+            self.oams_load_spool_cmd = self.mcu.lookup_command(
+                "oams_cmd_load_spool spool=%c"
+            )
+            
+            self.oams_unload_spool_cmd = self.mcu.lookup_command(
+                "oams_cmd_unload_spool"
+            )
+            
+            self.oams_follower_cmd = self.mcu.lookup_command(
+                "oams_cmd_follower enable=%c direction=%c"
+            )
+            
+            self.oams_calibrate_ptfe_length_cmd = self.mcu.lookup_command(
+                "oams_cmd_calibrate_ptfe_length spool=%c"
+            )
+            
+            self.oams_calibrate_hub_hes_cmd = self.mcu.lookup_command(
+                "oams_cmd_calibrate_hub_hes spool=%c"
+            )
+
+            cmd_queue = self.mcu.alloc_command_queue()
+
+            self.oams_spool_query_spool_cmd = self.mcu.lookup_query_command(
+                "oams_cmd_query_spool",
+                "oams_query_response_spool spool=%u",
+                cq=cmd_queue
+            )
+
+            params = self.oams_spool_query_spool_cmd.send()
+            if params is not None and 'spool' in params:
+                if params['spool'] >= 0 and params['spool'] <= 3:
+                    self.current_spool = params['spool']
+        except Exception as e:
+            logging.error("Failed to initialize OAMS commands: %s", e)
         
     def register_commands(self, name):
         # Register commands
@@ -118,6 +158,7 @@ class OAMS:
     cmd_OAMS_LOAD_SPOOL_help = "Load a new spool of filament"
     def cmd_OAMS_LOAD_SPOOL(self, gcmd):
         self.action_status = OAMS_STATUS_LOADING
+        self.oams_spool_query_spool_cmd.send()
         spool_idx = gcmd.get_int("SPOOL", None)
         if spool_idx is None:
             raise gcmd.error("SPOOL index is required")
@@ -130,6 +171,7 @@ class OAMS:
         
         if self.action_status_code == OAMS_OP_CODE_SUCCESS:
             gcmd.respond_info("Spool unloaded successfully")
+            self.current_spool = spool_idx
         elif self.action_status_code == OAMS_OP_CODE_ERROR_BUSY:
             gcmd.respond_error("OAMS is busy")
         else:    
@@ -144,6 +186,7 @@ class OAMS:
             self.reactor.pause(self.reactor.monotonic() + 0.1)
         if self.action_status_code == OAMS_OP_CODE_SUCCESS:
             gcmd.respond_info("Spool unloaded successfully")
+            self.current_spool = None
         elif self.action_status_code == OAMS_OP_CODE_ERROR_BUSY:
             gcmd.respond_error("OAMS is busy")
         else:    
@@ -159,9 +202,9 @@ class OAMS:
             raise gcmd.error("DIRECTION is required")
         self.oams_follower_cmd.send([enable, direction])
         if enable == 1 and direction == 0:
-            gcmd.respond_info("Follower enable in forward direction")
-        elif enable == 1 and direction == 1:
             gcmd.respond_info("Follower enable in reverse direction")
+        elif enable == 1 and direction == 1:
+            gcmd.respond_info("Follower enable in forward direction")
         elif enable == 0:
             gcmd.respond_info("Follower disabled")
 
@@ -225,29 +268,10 @@ class OAMS:
             % (self.filament_path_length)
         )
         
-        self.oams_load_spool_cmd = self.mcu.lookup_command(
-            "oams_cmd_load_spool spool=%c"
-        )
-        
-        self.oams_unload_spool_cmd = self.mcu.lookup_command(
-            "oams_cmd_unload_spool"
-        )
-        
-        self.oams_follower_cmd = self.mcu.lookup_command(
-            "oams_cmd_follower enable=%c direction=%c"
-        )
-        
-        self.oams_calibrate_ptfe_length_cmd = self.mcu.lookup_command(
-            "oams_cmd_calibrate_ptfe_length spool=%c"
-        )
-        
-        self.oams_calibrate_hub_hes_cmd = self.mcu.lookup_command(
-            "oams_cmd_calibrate_hub_hes spool=%c"
-        )
-
+    # these are available to the gcode
     def get_status(self, eventtime):
         return {
-            "placeholder": "ok?",
+            'current_spool': self.current_spool
         }
 
 

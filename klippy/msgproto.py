@@ -218,7 +218,6 @@ class MessageFormat:
         out = []
         out.append(self.msgid)
         for name, t in self.param_names:
-            logging.info("name: %s, t: %s params: %s", name, t, ",".join(params))
             t.encode(out, params[name])
         return out
 
